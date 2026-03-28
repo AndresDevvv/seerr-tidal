@@ -84,6 +84,7 @@ export interface PersonResult {
 
 export interface ArtistResult extends MbSearchResult {
   mediaType: 'artist';
+  externalSource?: 'musicbrainz' | 'tidal';
   tmdbPersonId?: number;
   name: string;
   type: 'Group' | 'Person';
@@ -97,6 +98,7 @@ export interface ArtistResult extends MbSearchResult {
 
 export interface AlbumResult extends MbSearchResult {
   mediaType: 'album';
+  externalSource?: 'musicbrainz' | 'tidal';
   title: string;
   'primary-type': 'Album' | 'Single' | 'EP';
   'first-release-date': string;
@@ -204,6 +206,7 @@ export const mapArtistResult = (
   id: artistResult.id,
   score: artistResult.score,
   mediaType: 'artist',
+  externalSource: 'musicbrainz',
   name: artistResult.name,
   type: artistResult.type,
   'sort-name': artistResult['sort-name'],
@@ -220,6 +223,7 @@ export const mapAlbumResult = (
   id: albumResult.id,
   score: albumResult.score,
   mediaType: 'album',
+  externalSource: 'musicbrainz',
   title: albumResult.title,
   'primary-type': albumResult['primary-type'],
   'first-release-date': albumResult['first-release-date'],

@@ -4,6 +4,7 @@ import type Media from '@server/entity/Media';
 export interface MusicDetails {
   id: string;
   mbId: string;
+  externalSource?: 'musicbrainz' | 'tidal';
   title: string;
   titleSlug?: string;
   mediaType: 'album';
@@ -72,6 +73,7 @@ export const mapMusicDetails = (
 ): MusicDetails => ({
   id: album.release_group_mbid,
   mbId: album.release_group_mbid,
+  externalSource: 'musicbrainz',
   title: album.release_group_metadata.release_group.name,
   titleSlug: album.release_group_metadata.release_group.name
     .toLowerCase()

@@ -177,6 +177,7 @@ const ListView = ({
                       (title.mediaInfo?.downloadStatus ?? []).length > 0
                     }
                     needsCoverArt={title.needsCoverArt}
+                    actionsDisabled={title.externalSource === 'tidal'}
                     canExpand
                   />
                 );

@@ -178,6 +178,8 @@ const MusicDetails = ({ music }: MusicDetailsProps) => {
     return <ErrorPage statusCode={404} />;
   }
 
+  const actionsDisabled = data.externalSource === 'tidal';
+
   const mediaLinks: PlayButtonLink[] = [];
 
   if (
@@ -470,7 +472,8 @@ const MusicDetails = ({ music }: MusicDetailsProps) => {
           </span>
         </div>
         <div className="media-actions">
-          {showHideButton &&
+          {!actionsDisabled &&
+            showHideButton &&
             data?.mediaInfo?.status !== MediaStatus.PROCESSING &&
             data?.mediaInfo?.status !== MediaStatus.AVAILABLE &&
             data?.mediaInfo?.status !== MediaStatus.PENDING &&
@@ -488,46 +491,52 @@ const MusicDetails = ({ music }: MusicDetailsProps) => {
                 </Button>
               </Tooltip>
             )}
-          {data?.mediaInfo?.status !== MediaStatus.BLOCKLISTED && (
-            <>
-              {toggleWatchlist ? (
-                <Tooltip content={intl.formatMessage(messages.addtowatchlist)}>
-                  <Button
-                    buttonType="ghost"
-                    className="z-40 mr-2"
-                    buttonSize="md"
-                    onClick={onClickWatchlistBtn}
+          {!actionsDisabled &&
+            data?.mediaInfo?.status !== MediaStatus.BLOCKLISTED && (
+              <>
+                {toggleWatchlist ? (
+                  <Tooltip
+                    content={intl.formatMessage(messages.addtowatchlist)}
                   >
-                    {isUpdating ? (
-                      <Spinner />
-                    ) : (
-                      <StarIcon className="text-amber-300" />
-                    )}
-                  </Button>
-                </Tooltip>
-              ) : (
-                <Tooltip
-                  content={intl.formatMessage(messages.removefromwatchlist)}
-                >
-                  <Button
-                    className="z-40 mr-2"
-                    buttonSize="md"
-                    onClick={onClickDeleteWatchlistBtn}
+                    <Button
+                      buttonType="ghost"
+                      className="z-40 mr-2"
+                      buttonSize="md"
+                      onClick={onClickWatchlistBtn}
+                    >
+                      {isUpdating ? (
+                        <Spinner />
+                      ) : (
+                        <StarIcon className="text-amber-300" />
+                      )}
+                    </Button>
+                  </Tooltip>
+                ) : (
+                  <Tooltip
+                    content={intl.formatMessage(messages.removefromwatchlist)}
                   >
-                    {isUpdating ? <Spinner /> : <MinusCircleIcon />}
-                  </Button>
-                </Tooltip>
-              )}
-            </>
-          )}
+                    <Button
+                      className="z-40 mr-2"
+                      buttonSize="md"
+                      onClick={onClickDeleteWatchlistBtn}
+                    >
+                      {isUpdating ? <Spinner /> : <MinusCircleIcon />}
+                    </Button>
+                  </Tooltip>
+                )}
+              </>
+            )}
           <PlayButton links={mediaLinks} />
-          <RequestButton
-            mediaType="music"
-            media={data.mediaInfo}
-            mbId={data.mbId}
-            onUpdate={() => revalidate()}
-          />
-          {data.mediaInfo?.status === MediaStatus.AVAILABLE &&
+          {!actionsDisabled && (
+            <RequestButton
+              mediaType="music"
+              media={data.mediaInfo}
+              mbId={data.mbId}
+              onUpdate={() => revalidate()}
+            />
+          )}
+          {!actionsDisabled &&
+            data.mediaInfo?.status === MediaStatus.AVAILABLE &&
             hasPermission(
               [Permission.CREATE_ISSUES, Permission.MANAGE_ISSUES],
               {
@@ -544,7 +553,8 @@ const MusicDetails = ({ music }: MusicDetailsProps) => {
                 </Button>
               </Tooltip>
             )}
-          {hasPermission(Permission.MANAGE_REQUESTS) &&
+          {!actionsDisabled &&
+            hasPermission(Permission.MANAGE_REQUESTS) &&
             data.mediaInfo &&
             (data.mediaInfo.jellyfinMediaId ||
               data.mediaInfo.jellyfinMediaId4k ||

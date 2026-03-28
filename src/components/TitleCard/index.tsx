@@ -47,6 +47,7 @@ interface TitleCardProps {
   isAddedToWatchlist?: number | boolean;
   needsCoverArt?: boolean;
   mutateParent?: () => void;
+  actionsDisabled?: boolean;
 }
 
 const messages = defineMessages('components.TitleCard', {
@@ -74,6 +75,7 @@ const TitleCard = ({
   canExpand = false,
   mutateParent,
   needsCoverArt,
+  actionsDisabled = false,
 }: TitleCardProps) => {
   const isTouch = useIsTouch();
   const intl = useIntl();
@@ -281,10 +283,10 @@ const TitleCard = ({
       ...(mediaType === 'movie' || mediaType === 'collection'
         ? [Permission.REQUEST_MOVIE]
         : mediaType === 'tv'
-        ? [Permission.REQUEST_TV]
-        : mediaType === 'album'
-        ? [Permission.REQUEST_MUSIC]
-        : []),
+          ? [Permission.REQUEST_TV]
+          : mediaType === 'album'
+            ? [Permission.REQUEST_MUSIC]
+            : []),
     ],
     { type: 'or' }
   );
@@ -307,10 +309,10 @@ const TitleCard = ({
           mediaType === 'movie'
             ? 'movie'
             : mediaType === 'collection'
-            ? 'collection'
-            : mediaType === 'tv'
-            ? 'tv'
-            : 'music'
+              ? 'collection'
+              : mediaType === 'tv'
+                ? 'tv'
+                : 'music'
         }
         onComplete={requestComplete}
         onUpdating={requestUpdating}
@@ -323,10 +325,10 @@ const TitleCard = ({
           mediaType === 'movie'
             ? 'movie'
             : mediaType === 'collection'
-            ? 'collection'
-            : mediaType === 'tv'
-            ? 'tv'
-            : 'music'
+              ? 'collection'
+              : mediaType === 'tv'
+                ? 'tv'
+                : 'music'
         }
         show={showBlocklistModal}
         onCancel={closeBlocklistModal}
@@ -421,23 +423,24 @@ const TitleCard = ({
                 mediaType === 'album'
                   ? 'border-green-500 bg-green-600'
                   : mediaType === 'movie' || mediaType === 'collection'
-                  ? 'border-blue-500 bg-blue-600'
-                  : 'border-purple-600 bg-purple-600'
+                    ? 'border-blue-500 bg-blue-600'
+                    : 'border-purple-600 bg-purple-600'
               }`}
             >
               <div className="flex h-4 items-center px-2 py-2 text-center text-xs font-medium uppercase tracking-wider text-white sm:h-5">
                 {mediaType === 'movie'
                   ? intl.formatMessage(globalMessages.movie)
                   : mediaType === 'collection'
-                  ? intl.formatMessage(globalMessages.collection)
-                  : mediaType === 'album'
-                  ? intl.formatMessage(globalMessages.music)
-                  : intl.formatMessage(globalMessages.tvshow)}
+                    ? intl.formatMessage(globalMessages.collection)
+                    : mediaType === 'album'
+                      ? intl.formatMessage(globalMessages.music)
+                      : intl.formatMessage(globalMessages.tvshow)}
               </div>
             </div>
             {showDetail && currentStatus !== MediaStatus.BLOCKLISTED && (
               <div className="flex flex-col gap-1">
-                {user?.userType !== UserType.PLEX &&
+                {!actionsDisabled &&
+                  user?.userType !== UserType.PLEX &&
                   (toggleWatchlist ? (
                     <Button
                       buttonType={'ghost'}
@@ -456,7 +459,8 @@ const TitleCard = ({
                       <MinusCircleIcon className={'h-3'} />
                     </Button>
                   ))}
-                {showHideButton &&
+                {!actionsDisabled &&
+                  showHideButton &&
                   currentStatus !== MediaStatus.PROCESSING &&
                   currentStatus !== MediaStatus.AVAILABLE &&
                   currentStatus !== MediaStatus.PARTIALLY_AVAILABLE &&
@@ -537,10 +541,10 @@ const TitleCard = ({
                   mediaType === 'album'
                     ? `/music/${id}`
                     : mediaType === 'movie'
-                    ? `/movie/${id}`
-                    : mediaType === 'collection'
-                      ? `/collection/${id}`
-                      : `/tv/${id}`
+                      ? `/movie/${id}`
+                      : mediaType === 'collection'
+                        ? `/collection/${id}`
+                        : `/tv/${id}`
                 }
                 className="absolute inset-0 h-full w-full cursor-pointer overflow-hidden text-left"
                 style={{
@@ -597,7 +601,8 @@ const TitleCard = ({
               </Link>
 
               <div className="absolute bottom-0 left-0 right-0 flex justify-between px-2 py-2">
-                {showRequestButton &&
+                {!actionsDisabled &&
+                  showRequestButton &&
                   (!currentStatus ||
                     currentStatus === MediaStatus.UNKNOWN ||
                     currentStatus === MediaStatus.DELETED) && (

@@ -36,6 +36,7 @@ const messages = defineMessages('components.ArtistDetails', {
 interface Album {
   id: string;
   title?: string;
+  externalSource?: 'musicbrainz' | 'tidal';
   'first-release-date'?: string;
   posterPath?: string | null;
   needsCoverArt?: boolean;
@@ -174,6 +175,7 @@ const AlbumSection = ({
                 artist={media['artist-credit']?.[0]?.name || artistName}
                 type={media['primary-type']}
                 status={media.mediaInfo?.status ?? MediaStatus.UNKNOWN}
+                actionsDisabled={media.externalSource === 'tidal'}
                 canExpand
                 needsCoverArt={!media.posterPath}
               />
@@ -207,8 +209,7 @@ const AlbumSection = ({
                 )}
               >
                 <div
-                  className={`relative h-full w-full transform-gpu cursor-pointer
-                  overflow-hidden rounded-xl text-white shadow-lg ring-1 transition duration-150 ease-in-out ${
+                  className={`relative h-full w-full transform-gpu cursor-pointer overflow-hidden rounded-xl text-white shadow-lg ring-1 transition duration-150 ease-in-out ${
                     isHovered
                       ? 'scale-105 bg-gray-600 ring-gray-500'
                       : 'scale-100 bg-gray-800 ring-gray-700'
@@ -510,14 +511,14 @@ const ArtistDetails = () => {
   return (
     <>
       <PageTitle title={artistName} />
-      <div className="absolute top-0 left-0 right-0 z-0 h-96">
+      <div className="absolute left-0 right-0 top-0 z-0 h-96">
         <ImageFader
           isDarker
           backgroundImages={data.artistBackdrop ? [data.artistBackdrop] : []}
         />
       </div>
       <div
-        className={`relative z-10 mt-4 mb-8 flex flex-col items-center lg:flex-row ${
+        className={`relative z-10 mb-8 mt-4 flex flex-col items-center lg:flex-row ${
           biographyContent ? 'lg:items-start' : ''
         }`}
       >
@@ -534,7 +535,7 @@ const ArtistDetails = () => {
         )}
         <div className="text-center text-gray-300 lg:text-left">
           <h1 className="text-3xl text-white lg:text-4xl">{artistName}</h1>
-          <div className="mt-1 mb-2 space-y-1 text-xs text-white sm:text-sm lg:text-base">
+          <div className="mb-2 mt-1 space-y-1 text-xs text-white sm:text-sm lg:text-base">
             <div>{personAttributes.join(' | ')}</div>
           </div>
           {biographyContent && (

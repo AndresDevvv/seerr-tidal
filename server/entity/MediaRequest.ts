@@ -9,6 +9,8 @@ import type {
   TmdbMovieDetails,
   TmdbTvDetails,
 } from '@server/api/themoviedb/interfaces';
+import TidalAPI from '@server/api/tidal';
+import type { TidalAlbumPageData } from '@server/api/tidal/interfaces';
 import {
   MediaRequestStatus,
   MediaStatus,
@@ -22,6 +24,7 @@ import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { DbAwareColumn } from '@server/utils/DbColumnHelper';
+import { isMusicBrainzId } from '@server/utils/musicIds';
 import { truncate } from 'lodash';
 import {
   AfterInsert,
@@ -49,6 +52,12 @@ type MediaRequestOptions = {
   isAutoRequest?: boolean;
 };
 
+type RequestedMedia =
+  | TmdbMovieDetails
+  | TmdbTvDetails
+  | LbAlbumDetails
+  | TidalAlbumPageData;
+
 @Entity()
 export class MediaRequest {
   public static async request(
@@ -58,6 +67,7 @@ export class MediaRequest {
   ): Promise<MediaRequest> {
     const tmdb = new TheMovieDb();
     const listenBrainz = new ListenBrainzAPI();
+    const tidal = new TidalAPI();
     const mediaRepository = getRepository(Media);
     const requestRepository = getRepository(MediaRequest);
     const userRepository = getRepository(User);
@@ -132,12 +142,14 @@ export class MediaRequest {
       throw new QuotaRestrictedError('Music Quota exceeded.');
     }
 
-    const requestedMedia =
+    const requestedMedia: RequestedMedia =
       requestBody.mediaType === MediaType.MOVIE
         ? await tmdb.getMovie({ movieId: requestBody.mediaId })
         : requestBody.mediaType === MediaType.TV
-        ? await tmdb.getTvShow({ tvId: requestBody.mediaId })
-        : await listenBrainz.getAlbum(requestBody.mediaId.toString());
+          ? await tmdb.getTvShow({ tvId: requestBody.mediaId })
+          : isMusicBrainzId(requestBody.mediaId.toString())
+            ? await listenBrainz.getAlbum(requestBody.mediaId.toString())
+            : await tidal.getAlbum(requestBody.mediaId.toString());
 
     let media = await mediaRepository.findOne({
       where:
@@ -154,15 +166,19 @@ export class MediaRequest {
     });
 
     const isTmdbMedia = (
-      media: TmdbMovieDetails | TmdbTvDetails | LbAlbumDetails
+      media: RequestedMedia
     ): media is TmdbMovieDetails | TmdbTvDetails => {
-      return 'id' in media;
+      return 'id' in media && !('albumId' in media);
     };
 
-    const isLbAlbum = (
-      media: TmdbMovieDetails | TmdbTvDetails | LbAlbumDetails
-    ): media is LbAlbumDetails => {
+    const isLbAlbum = (media: RequestedMedia): media is LbAlbumDetails => {
       return 'release_group_mbid' in media;
+    };
+
+    const isTidalAlbum = (
+      media: RequestedMedia
+    ): media is TidalAlbumPageData => {
+      return 'albumId' in media;
     };
 
     if (!media) {
@@ -170,9 +186,11 @@ export class MediaRequest {
         tmdbId: isTmdbMedia(requestedMedia) ? requestedMedia.id : undefined,
         mbId: isLbAlbum(requestedMedia)
           ? requestedMedia.release_group_mbid
-          : undefined,
+          : isTidalAlbum(requestedMedia)
+            ? requestedMedia.album.id.toString()
+            : undefined,
         tvdbId: isTmdbMedia(requestedMedia)
-          ? requestBody.tvdbId ?? requestedMedia.external_ids?.tvdb_id
+          ? (requestBody.tvdbId ?? requestedMedia.external_ids?.tvdb_id)
           : undefined,
         status: !requestBody.is4k ? MediaStatus.PENDING : MediaStatus.UNKNOWN,
         status4k: requestBody.is4k ? MediaStatus.PENDING : MediaStatus.UNKNOWN,
@@ -183,7 +201,9 @@ export class MediaRequest {
         logger.warn('Request for media blocked due to being blocklisted', {
           id: isLbAlbum(requestedMedia)
             ? requestedMedia.release_group_mbid
-            : requestedMedia.id,
+            : isTidalAlbum(requestedMedia)
+              ? requestedMedia.album.id.toString()
+              : requestedMedia.id,
           mediaType: requestBody.mediaType,
           label: 'Media Request',
         });
@@ -211,8 +231,11 @@ export class MediaRequest {
           : 'media.tmdbId = :tmdbId',
         requestBody.mediaType === 'music'
           ? {
-              mbId: (requestedMedia as { release_group_mbid: string })
-                .release_group_mbid,
+              mbId: isLbAlbum(requestedMedia)
+                ? requestedMedia.release_group_mbid
+                : isTidalAlbum(requestedMedia)
+                  ? requestedMedia.album.id.toString()
+                  : undefined,
             }
           : {
               tmdbId: isTmdbMedia(requestedMedia)
@@ -285,8 +308,8 @@ export class MediaRequest {
           requestBody.mediaType === MediaType.MOVIE
             ? { radarrServiceId: defaultRadarrId }
             : requestBody.mediaType === MediaType.TV
-            ? { sonarrServiceId: defaultSonarrId }
-            : { lidarrServiceId: defaultLidarrId },
+              ? { sonarrServiceId: defaultSonarrId }
+              : { lidarrServiceId: defaultLidarrId },
       });
 
       const appliedOverrideRules = overrideRules.filter((rule) => {
@@ -826,6 +849,7 @@ export class MediaRequest {
   ) {
     const tmdb = new TheMovieDb();
     const listenbrainz = new ListenBrainzAPI();
+    const tidal = new TidalAPI();
     const coverArt = new CoverArtArchive();
     const musicbrainz = new MusicBrainz();
 
@@ -834,8 +858,8 @@ export class MediaRequest {
         entity.type === MediaType.MOVIE
           ? 'Movie'
           : entity.type === MediaType.TV
-          ? 'Series'
-          : 'Album';
+            ? 'Series'
+            : 'Album';
       let event: string | undefined;
       let notifyAdmin = true;
       let notifySystem = true;
@@ -916,33 +940,51 @@ export class MediaRequest {
           ],
         });
       } else if (entity.type === MediaType.MUSIC && media.mbId) {
-        const album = await listenbrainz.getAlbum(media.mbId);
-        const coverArtResponse = await coverArt.getCoverArt(media.mbId);
-        const coverArtUrl =
-          coverArtResponse.images[0]?.thumbnails?.['250'] ?? '';
-        const artistId =
-          album.release_group_metadata?.artist?.artists[0]?.artist_mbid;
-        const artistWiki = artistId
-          ? await musicbrainz.getArtistWikipediaExtract({
-              artistMbid: artistId,
-            })
-          : null;
+        if (isMusicBrainzId(media.mbId)) {
+          const album = await listenbrainz.getAlbum(media.mbId);
+          const coverArtResponse = await coverArt.getCoverArt(media.mbId);
+          const coverArtUrl =
+            coverArtResponse.images[0]?.thumbnails?.['250'] ?? '';
+          const artistId =
+            album.release_group_metadata?.artist?.artists[0]?.artist_mbid;
+          const artistWiki = artistId
+            ? await musicbrainz.getArtistWikipediaExtract({
+                artistMbid: artistId,
+              })
+            : null;
 
-        notificationManager.sendNotification(type, {
-          media,
-          request: entity,
-          notifyAdmin,
-          notifySystem,
-          notifyUser: notifyAdmin ? undefined : entity.requestedBy,
-          event,
-          subject: `${album.release_group_metadata.release_group.name} by ${album.release_group_metadata.artist.name}`,
-          message: truncate(artistWiki?.content ?? '', {
-            length: 500,
-            separator: /\s/,
-            omission: '…',
-          }),
-          image: coverArtUrl,
-        });
+          notificationManager.sendNotification(type, {
+            media,
+            request: entity,
+            notifyAdmin,
+            notifySystem,
+            notifyUser: notifyAdmin ? undefined : entity.requestedBy,
+            event,
+            subject: `${album.release_group_metadata.release_group.name} by ${album.release_group_metadata.artist.name}`,
+            message: truncate(artistWiki?.content ?? '', {
+              length: 500,
+              separator: /\s/,
+              omission: '…',
+            }),
+            image: coverArtUrl,
+          });
+        } else {
+          const albumPage = await tidal.getAlbum(media.mbId);
+          const artistName =
+            albumPage.album.artists?.[0]?.name ?? 'Unknown Artist';
+
+          notificationManager.sendNotification(type, {
+            media,
+            request: entity,
+            notifyAdmin,
+            notifySystem,
+            notifyUser: notifyAdmin ? undefined : entity.requestedBy,
+            event,
+            subject: `${albumPage.album.title} by ${artistName}`,
+            message: '',
+            image: albumPage.album.coverUrl ?? '',
+          });
+        }
       }
     } catch (e) {
       logger.error('Something went wrong sending media notification(s)', {

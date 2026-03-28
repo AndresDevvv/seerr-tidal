@@ -10,6 +10,7 @@ import type {
 import SonarrAPI from '@server/api/servarr/sonarr';
 import TheMovieDb from '@server/api/themoviedb';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
+import TidalAPI from '@server/api/tidal';
 import {
   MediaRequestStatus,
   MediaStatus,
@@ -24,6 +25,7 @@ import notificationManager, { Notification } from '@server/lib/notifications';
 import { runOrpheusTidalDownload } from '@server/lib/orpheus';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
+import { isMusicBrainzId } from '@server/utils/musicIds';
 import { isEqual, truncate } from 'lodash';
 import type {
   EntityManager,
@@ -934,7 +936,11 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           throw new Error('media.mbId is required but is undefined');
         }
         const listenbrainz = new ListenBrainzAPI();
-        const albumInfo = await listenbrainz.getAlbum(media.mbId);
+        const tidal = new TidalAPI();
+        const isMbAlbum = isMusicBrainzId(media.mbId);
+        const albumInfo = isMbAlbum
+          ? await listenbrainz.getAlbum(media.mbId)
+          : await tidal.getAlbum(media.mbId);
 
         let rootFolder = lidarrSettings.activeDirectory;
 
@@ -965,10 +971,25 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           );
         }
 
-        const artistName =
-          albumInfo.release_group_metadata.artist.name ||
-          albumInfo.listening_stats.artist_name;
-        const albumName = albumInfo.release_group_metadata.release_group.name;
+        let artistName: string;
+        let albumName: string;
+
+        if (isMbAlbum) {
+          const lbAlbumInfo = albumInfo as Awaited<
+            ReturnType<ListenBrainzAPI['getAlbum']>
+          >;
+          artistName =
+            lbAlbumInfo.release_group_metadata.artist.name ||
+            lbAlbumInfo.listening_stats.artist_name;
+          albumName = lbAlbumInfo.release_group_metadata.release_group.name;
+        } else {
+          const tidalAlbumInfo = albumInfo as Awaited<
+            ReturnType<TidalAPI['getAlbum']>
+          >;
+          artistName =
+            tidalAlbumInfo.album.artists?.[0]?.name || 'Unknown Artist';
+          albumName = tidalAlbumInfo.album.title;
+        }
 
         await runOrpheusTidalDownload(lidarrSettings, {
           artistName,

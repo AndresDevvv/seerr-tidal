@@ -1,8 +1,8 @@
-import DiscoverMusicArtists from '@app/components/Discover/DiscoverMusicArtists';
+import Error from '@app/pages/_error';
 import type { NextPage } from 'next';
 
 const DiscoverMusicArtistsPage: NextPage = () => {
-  return <DiscoverMusicArtists />;
+  return <Error statusCode={404} />;
 };
 
 export default DiscoverMusicArtistsPage;

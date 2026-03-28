@@ -2,6 +2,7 @@ import ListenBrainzAPI from '@server/api/listenbrainz';
 import MusicBrainz from '@server/api/musicbrainz';
 import TheAudioDb from '@server/api/theaudiodb';
 import TmdbPersonMapper from '@server/api/themoviedb/personMapper';
+import TidalAPI from '@server/api/tidal';
 import { MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
@@ -10,12 +11,101 @@ import MetadataArtist from '@server/entity/MetadataArtist';
 import { Watchlist } from '@server/entity/Watchlist';
 import logger from '@server/logger';
 import { mapMusicDetails } from '@server/models/Music';
+import { isMusicBrainzId } from '@server/utils/musicIds';
 import { Router } from 'express';
 import { In } from 'typeorm';
 
 const musicRoutes = Router();
 
+const mapTidalArtistAlbums = (
+  items: {
+    id: number | string;
+    title: string;
+    releaseDate?: string;
+    type?: string;
+    coverUrl?: string;
+    artists?: { name: string }[];
+  }[]
+) =>
+  items.map((album) => ({
+    id: album.id.toString(),
+    mediaType: 'album',
+    externalSource: 'tidal',
+    title: album.title,
+    'first-release-date': album.releaseDate ?? '',
+    'artist-credit': (album.artists ?? []).map((artist) => ({
+      name: artist.name,
+    })),
+    'primary-type': album.type || 'Album',
+    posterPath: album.coverUrl ?? null,
+    needsCoverArt: !album.coverUrl,
+  }));
+
 musicRoutes.get('/:id', async (req, res, next) => {
+  if (!isMusicBrainzId(req.params.id)) {
+    const tidal = new TidalAPI();
+
+    try {
+      const albumPage = await tidal.getAlbum(req.params.id);
+      const album = albumPage.album;
+      const mainArtist = album.artists?.[0];
+
+      return res.status(200).json({
+        id: album.id.toString(),
+        mbId: album.id.toString(),
+        externalSource: 'tidal',
+        title: album.title,
+        titleSlug: album.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        mediaType: 'album',
+        type: album.type || 'Album',
+        releaseDate: album.releaseDate ?? '',
+        artist: {
+          id: mainArtist?.name || '',
+          name: mainArtist?.name || 'Unknown Artist',
+          type: 'Artist',
+        },
+        tracks: albumPage.tracks.map((trackWrapper) => {
+          const track = trackWrapper.item;
+          return {
+            name: track.title || track.name || 'Unknown Track',
+            position: track.trackNumber ?? 0,
+            length: (track.duration ?? 0) * 1000,
+            recordingMbid: track.id.toString(),
+            totalListenCount: 0,
+            totalUserCount: 0,
+            artists: (track.artists ?? []).map((artist) => ({
+              name: artist.name,
+              mbid: artist.name,
+            })),
+          };
+        }),
+        tags: {
+          artist: [],
+          releaseGroup: [],
+        },
+        stats: {
+          totalListenCount: 0,
+          totalUserCount: 0,
+          listeners: [],
+        },
+        posterPath: album.coverUrl ?? null,
+        needsCoverArt: !album.coverUrl,
+        artistThumb: mainArtist?.pictureUrl ?? null,
+        artistBackdrop: mainArtist?.pictureUrl ?? null,
+      });
+    } catch (e) {
+      logger.error('Something went wrong retrieving TIDAL album details', {
+        label: 'Music API',
+        errorMessage: e instanceof Error ? e.message : 'Unknown error',
+        albumId: req.params.id,
+      });
+      return next({
+        status: 500,
+        message: 'Unable to retrieve album details.',
+      });
+    }
+  }
+
   const listenbrainz = new ListenBrainzAPI();
   const musicbrainz = new MusicBrainz();
   const personMapper = new TmdbPersonMapper();
@@ -201,6 +291,65 @@ musicRoutes.get('/:id', async (req, res, next) => {
 });
 
 musicRoutes.get('/:id/artist', async (req, res, next) => {
+  if (!isMusicBrainzId(req.params.id)) {
+    const tidal = new TidalAPI();
+
+    try {
+      const albumPage = await tidal.getAlbum(req.params.id);
+      const artist = albumPage.album.artists?.[0];
+
+      if (!artist?.name) {
+        return res.status(404).json({
+          status: 404,
+          message: 'Artist not found',
+        });
+      }
+
+      const page = Number(req.query.page) || 1;
+      const pageSize = Number(req.query.pageSize) || 20;
+      const artistSearch = await tidal.search({
+        query: artist.name,
+        types: ['albums'],
+        limit: 100,
+      });
+      const matchingAlbums = (artistSearch.results.albums?.items ?? []).filter(
+        (item) =>
+          (item.artists ?? []).some(
+            (itemArtist) => itemArtist.name === artist.name
+          )
+      );
+      const pagedAlbums = matchingAlbums.slice(
+        (page - 1) * pageSize,
+        page * pageSize
+      );
+
+      return res.status(200).json({
+        artist: {
+          name: artist.name,
+          artistThumb: artist.pictureUrl ?? null,
+          artistBackdrop: artist.pictureUrl ?? null,
+          releaseGroups: mapTidalArtistAlbums(pagedAlbums),
+          pagination: {
+            page,
+            pageSize,
+            totalItems: matchingAlbums.length,
+            totalPages: Math.ceil(matchingAlbums.length / pageSize),
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Something went wrong retrieving TIDAL artist details', {
+        label: 'Music API',
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        artistId: req.params.id,
+      });
+      return next({
+        status: 500,
+        message: 'Unable to retrieve artist details.',
+      });
+    }
+  }
+
   try {
     const listenbrainzApi = new ListenBrainzAPI();
     const theAudioDb = new TheAudioDb();
@@ -275,6 +424,58 @@ musicRoutes.get('/:id/artist', async (req, res, next) => {
 });
 
 musicRoutes.get('/:id/artist-discography', async (req, res, next) => {
+  if (!isMusicBrainzId(req.params.id)) {
+    const tidal = new TidalAPI();
+
+    try {
+      const page = Number(req.query.page) || 1;
+      const pageSize = Number(req.query.pageSize) || 20;
+      const albumPage = await tidal.getAlbum(req.params.id);
+      const artist = albumPage.album.artists?.[0];
+
+      if (!artist?.name) {
+        return res.status(404).json({
+          status: 404,
+          message: 'Artist not found',
+        });
+      }
+
+      const artistSearch = await tidal.search({
+        query: artist.name,
+        types: ['albums'],
+        limit: 100,
+      });
+
+      const matchingAlbums = (artistSearch.results.albums?.items ?? []).filter(
+        (item) =>
+          (item.artists ?? []).some(
+            (itemArtist) => itemArtist.name === artist.name
+          )
+      );
+      const pagedAlbums = matchingAlbums.slice(
+        (page - 1) * pageSize,
+        page * pageSize
+      );
+
+      return res.status(200).json({
+        page,
+        totalPages: Math.ceil(matchingAlbums.length / pageSize),
+        totalResults: matchingAlbums.length,
+        results: mapTidalArtistAlbums(pagedAlbums),
+      });
+    } catch (error) {
+      logger.error('Something went wrong retrieving TIDAL artist discography', {
+        label: 'Music API',
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        artistId: req.params.id,
+      });
+      return next({
+        status: 500,
+        message: 'Unable to retrieve artist discography.',
+      });
+    }
+  }
+
   try {
     const listenbrainzApi = new ListenBrainzAPI();
     const metadataAlbumRepository = getRepository(MetadataAlbum);
@@ -370,6 +571,17 @@ musicRoutes.get('/:id/artist-discography', async (req, res, next) => {
 });
 
 musicRoutes.get('/:id/artist-similar', async (req, res, next) => {
+  if (!isMusicBrainzId(req.params.id)) {
+    const page = Number(req.query.page) || 1;
+
+    return res.status(200).json({
+      page,
+      totalPages: 0,
+      totalResults: 0,
+      results: [],
+    });
+  }
+
   try {
     const listenbrainzApi = new ListenBrainzAPI();
     const personMapper = new TmdbPersonMapper();
