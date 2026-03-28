@@ -51,8 +51,8 @@ COPY --chown=node:node --from=build /app/.next ./.next
 COPY --chown=node:node --from=build /app/dist ./dist
 
 RUN touch config/DOCKER && \
-  echo "{\"commitTag\": \"${COMMIT_TAG}\"}" > committag.json
-
+  echo "{\"commitTag\": \"${COMMIT_TAG:-local}\"}" > committag.json
+  
 EXPOSE 5055
 
 CMD [ "npm", "start" ]
