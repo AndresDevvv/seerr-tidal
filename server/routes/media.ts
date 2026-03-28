@@ -1,0 +1,442 @@
+import RadarrAPI from '@server/api/servarr/radarr';
+import SonarrAPI from '@server/api/servarr/sonarr';
+import TautulliAPI from '@server/api/tautulli';
+import TheMovieDb from '@server/api/themoviedb';
+import { MediaStatus, MediaType } from '@server/constants/media';
+import { getRepository } from '@server/datasource';
+import Media from '@server/entity/Media';
+import MetadataAlbum from '@server/entity/MetadataAlbum';
+import Season from '@server/entity/Season';
+import { User } from '@server/entity/User';
+import type {
+  MediaResultsResponse,
+  MediaWatchDataResponse,
+} from '@server/interfaces/api/mediaInterfaces';
+import { Permission } from '@server/lib/permissions';
+import { getSettings } from '@server/lib/settings';
+import logger from '@server/logger';
+import { isAuthenticated } from '@server/middleware/auth';
+import { Router } from 'express';
+import type { FindOneOptions } from 'typeorm';
+import { In } from 'typeorm';
+
+const mediaRoutes = Router();
+
+mediaRoutes.get('/', async (req, res, next) => {
+  const mediaRepository = getRepository(Media);
+  const metadataAlbumRepository = getRepository(MetadataAlbum);
+
+  const pageSize = req.query.take ? Number(req.query.take) : 20;
+  const skip = req.query.skip ? Number(req.query.skip) : 0;
+
+  let statusFilter = undefined;
+
+  switch (req.query.filter) {
+    case 'available':
+      statusFilter = MediaStatus.AVAILABLE;
+      break;
+    case 'partial':
+      statusFilter = MediaStatus.PARTIALLY_AVAILABLE;
+      break;
+    case 'allavailable':
+      statusFilter = In([
+        MediaStatus.AVAILABLE,
+        MediaStatus.PARTIALLY_AVAILABLE,
+      ]);
+      break;
+    case 'processing':
+      statusFilter = MediaStatus.PROCESSING;
+      break;
+    case 'pending':
+      statusFilter = MediaStatus.PENDING;
+      break;
+    default:
+      statusFilter = undefined;
+  }
+
+  let sortFilter: FindOneOptions<Media>['order'] = {
+    id: 'DESC',
+  };
+
+  switch (req.query.sort) {
+    case 'modified':
+      sortFilter = {
+        updatedAt: 'DESC',
+      };
+      break;
+    case 'mediaAdded':
+      sortFilter = {
+        mediaAddedAt: 'DESC',
+      };
+  }
+
+  try {
+    const [media, mediaCount] = await mediaRepository.findAndCount({
+      order: sortFilter,
+      where: statusFilter && {
+        status: statusFilter,
+      },
+      take: pageSize,
+      skip,
+    });
+
+    const musicMediaItems = media.filter(
+      (item) => item.mediaType === 'music' && item.mbId
+    );
+
+    const mbIds = musicMediaItems.map((item) => item.mbId as string);
+
+    const albumMetadata =
+      mbIds.length > 0
+        ? await metadataAlbumRepository.find({
+            where: { mbAlbumId: In(mbIds) },
+            select: ['mbAlbumId', 'caaUrl'],
+          })
+        : [];
+
+    const albumMetadataMap = new Map(
+      albumMetadata.map((metadata) => [metadata.mbAlbumId, metadata])
+    );
+
+    const mediaWithCoverArt = media.map((item) => {
+      if (item.mediaType === 'music' && item.mbId) {
+        const metadata = albumMetadataMap.get(item.mbId);
+        return {
+          ...item,
+          posterPath: metadata?.caaUrl || null,
+          needsCoverArt: !metadata?.caaUrl,
+        };
+      }
+      return item;
+    });
+
+    return res.status(200).json({
+      pageInfo: {
+        pages: Math.ceil(mediaCount / pageSize),
+        pageSize,
+        results: mediaCount,
+        page: Math.ceil(skip / pageSize) + 1,
+      },
+      results: mediaWithCoverArt,
+    } as MediaResultsResponse);
+  } catch (e) {
+    logger.error('Something went wrong retrieving media', {
+      label: 'Media',
+      error: e instanceof Error ? e.message : 'Unknown error',
+    });
+    next({ status: 500, message: 'Unable to retrieve media' });
+  }
+});
+
+mediaRoutes.post<
+  {
+    id: string;
+    status: 'available' | 'partial' | 'processing' | 'pending' | 'unknown';
+  },
+  Media
+>(
+  '/:id/:status',
+  isAuthenticated(Permission.MANAGE_REQUESTS),
+  async (req, res, next) => {
+    const mediaRepository = getRepository(Media);
+    const seasonRepository = getRepository(Season);
+
+    const media = await mediaRepository.findOne({
+      where: { id: Number(req.params.id) },
+    });
+
+    if (!media) {
+      return next({ status: 404, message: 'Media does not exist.' });
+    }
+
+    const is4k = String(req.body.is4k) === 'true';
+
+    switch (req.params.status) {
+      case 'available':
+        media[is4k ? 'status4k' : 'status'] = MediaStatus.AVAILABLE;
+
+        if (media.mediaType === MediaType.TV) {
+          const expectedSeasons = req.body.seasons ?? [];
+
+          for (const expectedSeason of expectedSeasons) {
+            let season = media.seasons.find(
+              (s) => s.seasonNumber === expectedSeason?.seasonNumber
+            );
+
+            if (!season) {
+              // Create the season if it doesn't exist
+              season = seasonRepository.create({
+                seasonNumber: expectedSeason?.seasonNumber,
+              });
+              media.seasons.push(season);
+            }
+
+            season[is4k ? 'status4k' : 'status'] = MediaStatus.AVAILABLE;
+          }
+        }
+        break;
+      case 'partial':
+        if (media.mediaType === MediaType.MOVIE) {
+          return next({
+            status: 400,
+            message: 'Only series can be set to be partially available',
+          });
+        }
+        media[is4k ? 'status4k' : 'status'] = MediaStatus.PARTIALLY_AVAILABLE;
+        break;
+      case 'processing':
+        media[is4k ? 'status4k' : 'status'] = MediaStatus.PROCESSING;
+        break;
+      case 'pending':
+        media[is4k ? 'status4k' : 'status'] = MediaStatus.PENDING;
+        break;
+      case 'unknown':
+        media[is4k ? 'status4k' : 'status'] = MediaStatus.UNKNOWN;
+    }
+
+    await mediaRepository.save(media);
+
+    return res.status(200).json(media);
+  }
+);
+
+mediaRoutes.delete(
+  '/:id',
+  isAuthenticated(Permission.MANAGE_REQUESTS),
+  async (req, res, next) => {
+    try {
+      const mediaRepository = getRepository(Media);
+
+      const media = await mediaRepository.findOneOrFail({
+        where: { id: Number(req.params.id) },
+      });
+
+      if (media.status === MediaStatus.BLOCKLISTED) {
+        media.resetServiceData();
+        await mediaRepository.save(media);
+      } else {
+        await mediaRepository.remove(media);
+      }
+
+      return res.status(204).send();
+    } catch (e) {
+      logger.error('Something went wrong fetching media in delete request', {
+        label: 'Media',
+        message: e.message,
+      });
+      next({ status: 404, message: 'Media not found' });
+    }
+  }
+);
+
+mediaRoutes.delete(
+  '/:id/file',
+  isAuthenticated(Permission.MANAGE_REQUESTS),
+  async (req, res, next) => {
+    try {
+      const settings = getSettings();
+      const mediaRepository = getRepository(Media);
+      const media = await mediaRepository.findOneOrFail({
+        where: { id: Number(req.params.id) },
+      });
+
+      const is4k = String(req.query.is4k) === 'true';
+
+      let serviceSettings;
+
+      if (media.mediaType === MediaType.MOVIE) {
+        serviceSettings = settings.radarr.find(
+          (radarr) => radarr.isDefault && radarr.is4k === is4k
+        );
+      } else if (media.mediaType === MediaType.TV) {
+        serviceSettings = settings.sonarr.find(
+          (sonarr) => sonarr.isDefault && sonarr.is4k === is4k
+        );
+      } else {
+        serviceSettings = settings.lidarr.find((lidarr) => lidarr.isDefault);
+      }
+
+      const specificServiceId = is4k ? media.serviceId4k : media.serviceId;
+      if (
+        specificServiceId &&
+        specificServiceId >= 0 &&
+        serviceSettings?.id !== specificServiceId
+      ) {
+        if (media.mediaType === MediaType.MOVIE) {
+          serviceSettings = settings.radarr.find(
+            (radarr) => radarr.id === specificServiceId
+          );
+        } else if (media.mediaType === MediaType.TV) {
+          serviceSettings = settings.sonarr.find(
+            (sonarr) => sonarr.id === specificServiceId
+          );
+        } else {
+          serviceSettings = settings.lidarr.find(
+            (lidarr) => lidarr.id === media.serviceId
+          );
+        }
+      }
+
+      if (!serviceSettings) {
+        const serviceType =
+          media.mediaType === MediaType.MOVIE
+            ? 'Radarr'
+            : media.mediaType === MediaType.TV
+              ? 'Sonarr'
+              : 'OrpheusDL';
+
+        logger.warn(
+          `There is no default ${
+            is4k && media.mediaType !== MediaType.MUSIC ? '4K ' : ''
+          }${serviceType} server configured.`,
+          {
+            label: 'Media Request',
+            mediaId: media.id,
+          }
+        );
+        return res
+          .status(500)
+          .json({ message: `No default ${serviceType} server configured` });
+      }
+
+      let service;
+
+      if (media.mediaType === MediaType.MOVIE) {
+        service = new RadarrAPI({
+          apiKey: serviceSettings.apiKey,
+          url: RadarrAPI.buildUrl(serviceSettings, '/api/v3'),
+        });
+
+        await (service as RadarrAPI).removeMovie(media.tmdbId);
+      } else if (media.mediaType === MediaType.TV) {
+        service = new SonarrAPI({
+          apiKey: serviceSettings?.apiKey,
+          url: SonarrAPI.buildUrl(serviceSettings, '/api/v3'),
+        });
+
+        const tmdb = new TheMovieDb();
+        const series = await tmdb.getTvShow({ tvId: media.tmdbId });
+        const tvdbId = series.external_ids.tvdb_id ?? media.tvdbId;
+
+        if (!tvdbId) {
+          throw new Error('TVDB ID not found');
+        }
+        await (service as SonarrAPI).removeSeries(tvdbId);
+      } else if (media.mediaType == MediaType.MUSIC) {
+        return res.status(400).json({
+          message:
+            'Removing music from the external service is not supported for OrpheusDL/TIDAL requests.',
+        });
+      }
+
+      return res.status(204).send();
+    } catch (e) {
+      logger.error('Something went wrong deleting media file', {
+        label: 'Media',
+        message: e.message,
+      });
+      next({ status: 404, message: 'Media not found' });
+    }
+  }
+);
+
+mediaRoutes.get<{ id: string }, MediaWatchDataResponse>(
+  '/:id/watch_data',
+  isAuthenticated(Permission.ADMIN),
+  async (req, res, next) => {
+    const settings = getSettings().tautulli;
+
+    if (!settings.hostname || !settings.port || !settings.apiKey) {
+      return next({
+        status: 404,
+        message: 'Tautulli API not configured.',
+      });
+    }
+
+    const media = await getRepository(Media).findOne({
+      where: { id: Number(req.params.id) },
+    });
+
+    if (!media) {
+      return next({ status: 404, message: 'Media does not exist.' });
+    }
+
+    try {
+      const tautulli = new TautulliAPI(settings);
+      const userRepository = getRepository(User);
+
+      const response: MediaWatchDataResponse = {};
+
+      if (media.ratingKey) {
+        const watchStats = await tautulli.getMediaWatchStats(media.ratingKey);
+        const watchUsers = await tautulli.getMediaWatchUsers(media.ratingKey);
+
+        const users = await userRepository
+          .createQueryBuilder('user')
+          .where('user.plexId IN (:...plexIds)', {
+            plexIds: watchUsers.map((u) => u.user_id),
+          })
+          .getMany();
+
+        const playCount =
+          watchStats.find((i) => i.query_days == 0)?.total_plays ?? 0;
+
+        const playCount7Days =
+          watchStats.find((i) => i.query_days == 7)?.total_plays ?? 0;
+
+        const playCount30Days =
+          watchStats.find((i) => i.query_days == 30)?.total_plays ?? 0;
+
+        response.data = {
+          users: users,
+          playCount,
+          playCount7Days,
+          playCount30Days,
+        };
+      }
+
+      if (media.ratingKey4k) {
+        const watchStats4k = await tautulli.getMediaWatchStats(
+          media.ratingKey4k
+        );
+        const watchUsers4k = await tautulli.getMediaWatchUsers(
+          media.ratingKey4k
+        );
+
+        const users = await userRepository
+          .createQueryBuilder('user')
+          .where('user.plexId IN (:...plexIds)', {
+            plexIds: watchUsers4k.map((u) => u.user_id),
+          })
+          .getMany();
+
+        const playCount =
+          watchStats4k.find((i) => i.query_days == 0)?.total_plays ?? 0;
+
+        const playCount7Days =
+          watchStats4k.find((i) => i.query_days == 7)?.total_plays ?? 0;
+
+        const playCount30Days =
+          watchStats4k.find((i) => i.query_days == 30)?.total_plays ?? 0;
+
+        response.data4k = {
+          users,
+          playCount,
+          playCount7Days,
+          playCount30Days,
+        };
+      }
+
+      return res.status(200).json(response);
+    } catch (e) {
+      logger.error('Something went wrong fetching media watch data', {
+        label: 'API',
+        errorMessage: e.message,
+        mediaId: req.params.id,
+      });
+      next({ status: 500, message: 'Failed to fetch watch data.' });
+    }
+  }
+);
+
+export default mediaRoutes;
